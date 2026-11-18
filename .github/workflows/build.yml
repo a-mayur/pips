@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,18 +22,47 @@ jobs:
           else
             VERSION="0.0.${GITHUB_RUN_NUMBER}"
           fi
-          bash build.sh "$VERSION"
+          bash macos/build.sh "$VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Pips
+          name: Pips-macOS
           path: |
-            build/Pips.dmg
-            build/Pips.zip
-            build/SHA256SUMS.txt
+            macos/build/Pips.dmg
+            macos/build/Pips.zip
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test and build
+        run: |
+          cargo test
+          cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pips-Windows
+          path: windows/target/release/pips.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Create release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" build/Pips.dmg build/Pips.zip build/SHA256SUMS.txt --generate-notes
+        run: |
+          cd dist
+          sha256sum Pips.dmg Pips.zip pips.exe > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" Pips.dmg Pips.zip pips.exe SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --generate-notes

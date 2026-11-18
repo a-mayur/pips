@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="146" height="40" viewBox="0 0 146 40">
+  <rect width="146" height="40" rx="20" fill="#0067c0"/>
+  <path transform="translate(22 11) scale(.75)" fill="#fff" d="M3 5.5l7.5-1v7.2H3zm0 13l7.5 1v-7.1H3zm8.4 1.1L21 21v-8.6h-9.6zm0-15.2v7.3H21V3z"/>
+  <text x="46" y="25.5" fill="#fff" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600">Windows</text>
+</svg>
