@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Pips app icon source. macOS grid: 824 px body centered on a 1024 px canvas. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".28"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity=".3"/>
+    </filter>
+    <clipPath id="body"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <g clip-path="url(#body)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#gloss)"/>
+    <!-- battery, scaled 0.805 around the center from the 1024 concept -->
+    <g transform="translate(512 512) scale(.805) translate(-512 -512)">
+      <rect x="172" y="322" width="620" height="380" rx="96" fill="none" stroke="#fff" stroke-width="56"/>
+      <rect x="812" y="440" width="52" height="144" rx="26" fill="#fff"/>
+      <circle cx="322" cy="512" r="72" fill="#fff"/>
+      <circle cx="482" cy="512" r="72" fill="#fff"/>
+      <circle cx="642" cy="512" r="72" fill="#fff" opacity=".35"/>
+    </g>
+  </g>
+</svg>
