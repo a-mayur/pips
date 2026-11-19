@@ -21,6 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
+use crate::about;
 use crate::battery::{self, Kind, Reading};
 use crate::connected;
 use crate::flyout::{self, Card};
@@ -33,6 +34,9 @@ const TIMER_BACKGROUND: usize = 1;
 const TIMER_SOON: usize = 2; // after a connect/disconnect, battery change or wake
 const TIMER_LATE: usize = 3; // headphones report battery several seconds after connecting
 const TIMER_TOPMOST: usize = 4; // the taskbar can end up above the strip, e.g. after clicking it
+const TIMER_HOVER: usize = 5; // while the device card is open: close it once the pointer leaves
+const HOVER_MS: u32 = 200;
+const HOVER_TICKS: u8 = 3; // ~0.6 s away from the card and its chip
 /// Safety net for devices whose battery changes Windows does not report as events.
 const BACKGROUND_MS: u32 = 10 * 60 * 1000;
 const SOON_MS: u32 = 3_000;
@@ -43,6 +47,7 @@ const TOPMOST_MS: u32 = 5_000;
 const ID_REFRESH: usize = 1;
 const ID_LOGIN: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_ABOUT: usize = 4;
 
 const LOW: u8 = 20;
 const RED: Rgb = Rgb(0xFF, 0x5F, 0x57);
@@ -64,6 +69,10 @@ struct App {
     flyout: HWND,
     /// device whose card is open; the card redraws on every refresh
     flyout_device: Option<String>,
+    /// the open card's chip, in screen coordinates
+    flyout_anchor: RECT,
+    /// consecutive hover checks with the pointer away from the card and its chip
+    pointer_away: u8,
     watchers: [DeviceWatcher; 2],
 }
 
@@ -108,6 +117,8 @@ pub fn run() -> Result<()> {
             chips: Vec::new(),
             flyout: flyout::create(instance.into())?,
             flyout_device: None,
+            flyout_anchor: RECT::default(),
+            pointer_away: 0,
             watchers,
         };
         APP.with(|a| *a.borrow_mut() = Some(app));
@@ -194,6 +205,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                 SetTimer(Some(hwnd), TIMER_LATE, LATE_MS, None);
             }
         }
+        WM_TIMER if wparam.0 == TIMER_HOVER => {
+            with_app(|a| a.close_flyout_if_pointer_left());
+        }
         WM_TIMER if wparam.0 == TIMER_TOPMOST => {
             with_app(|a| a.keep_on_top());
         }
@@ -259,6 +273,7 @@ fn show_menu(hwnd: HWND) {
         }
         ID_LOGIN => settings::set_launch_at_login(!settings::launch_at_login()),
         ID_QUIT => unsafe { DestroyWindow(hwnd) },
+        ID_ABOUT => about::show(hwnd, unsafe { GetModuleHandleW(None) }.map(Into::into).unwrap_or_default()),
         _ => Ok(()),
     };
     if let Err(e) = result {
@@ -333,6 +348,38 @@ impl App {
         };
         if let Err(e) = flyout::show(self.flyout, &card, strip_rect.left + (left + right) / 2, strip_rect.top) {
             self.error = Some(format!("Showing device card failed: {}", e.message()));
+            return;
+        }
+        self.flyout_anchor = RECT { left: strip_rect.left + left, top: strip_rect.top, right: strip_rect.left + right, bottom: strip_rect.bottom };
+        unsafe { SetTimer(Some(self.hwnd), TIMER_HOVER, HOVER_MS, None) };
+    }
+
+    /// Closes the card once the pointer has been away from it and its chip for a moment.
+    fn close_flyout_if_pointer_left(&mut self) {
+        if !flyout::is_open(self.flyout) {
+            let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_HOVER) };
+            self.pointer_away = 0;
+            return;
+        }
+        let mut card = RECT::default();
+        let mut point = POINT::default();
+        unsafe {
+            let _ = GetWindowRect(self.flyout, &mut card);
+            let _ = GetCursorPos(&mut point);
+        }
+        // one area covering the chip, the card and the arrow gap between them
+        let a = self.flyout_anchor;
+        let margin = 6;
+        let inside = point.x >= card.left.min(a.left) - margin
+            && point.x <= card.right.max(a.right) + margin
+            && point.y >= card.top.min(a.top) - margin
+            && point.y <= card.bottom.max(a.bottom) + margin;
+        self.pointer_away = if inside { 0 } else { self.pointer_away + 1 };
+        if self.pointer_away >= HOVER_TICKS {
+            flyout::hide(self.flyout);
+            self.flyout_device = None;
+            self.pointer_away = 0;
+            let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_HOVER) };
         }
     }
 
@@ -360,6 +407,7 @@ impl App {
             let login = if settings::launch_at_login() { MF_CHECKED } else { MF_STRING };
             append(menu, MF_STRING | login, ID_LOGIN, "Launch at login");
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            append(menu, MF_STRING, ID_ABOUT, "About Pips");
             append(menu, MF_STRING, ID_QUIT, "Quit Pips");
             menu
         }

@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"] // tray app: no console window
 
+mod about;
 mod app;
 mod battery;
 mod connected;

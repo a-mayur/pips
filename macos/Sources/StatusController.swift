@@ -26,6 +26,9 @@ final class StatusController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private var popoverDevice: String?  // name of the device whose popover is open
     private var popoverClosed = Date.distantPast
+    private var popoverAnchor = NSRect.zero  // the device's part of the button, in button coordinates
+    private var hoverTimer: Timer?
+    private var pointerLeft: Date?  // when the pointer left the popover and its device
 
     override init() {
         super.init()
@@ -133,6 +136,22 @@ final class StatusController: NSObject, NSPopoverDelegate {
 
     // MARK: Settings actions
 
+    /// The standard About panel: icon, name and version from Info.plist (set from the release tag by build.sh).
+    @objc private func showAbout() {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let small: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .paragraphStyle: style,
+                                                    .foregroundColor: NSColor.secondaryLabelColor]
+        let credits = NSMutableAttributedString(
+            string: "github.com/a-mayur/pips",
+            attributes: [.font: NSFont.systemFont(ofSize: 12), .paragraphStyle: style,
+                         .link: URL(string: "https://github.com/a-mayur/pips")!])
+        credits.append(NSAttributedString(string: "\n\nFree and open source · GPL-3.0", attributes: small))
+        NSApp.activate(ignoringOtherApps: true)  // a menu bar app is never frontmost on its own
+        // an empty build number shows "Version 1.0.0" instead of "Version 1.0.0 (1.0.0)"
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits, .version: ""])
+    }
+
     @objc private func toggleLaunchAtLogin() {
         let service = SMAppService.mainApp
         do {
@@ -164,8 +183,13 @@ final class StatusController: NSObject, NSPopoverDelegate {
             showMenu(sender)
             return
         }
-        let x = sender.convert(event.locationInWindow, from: nil).x - imageOffset(sender)
-        guard let i = segments.firstIndex(where: { $0.contains(x) }), i < devices.count else {
+        // the pointer itself: newer macOS reports every menu bar click at the item's center
+        guard let window = sender.window else { return }
+        let point = sender.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let x = point.x - imageOffset(sender)
+        // nearest device, so a click in the gap between two devices still opens one
+        let distance = { (s: ClosedRange<CGFloat>) in s.contains(x) ? 0 : min(abs(x - s.lowerBound), abs(x - s.upperBound)) }
+        guard let i = segments.indices.min(by: { distance(segments[$0]) < distance(segments[$1]) }), i < devices.count else {
             showMenu(sender)  // no device shown: the menu is the only useful thing
             return
         }
@@ -195,8 +219,28 @@ final class StatusController: NSObject, NSPopoverDelegate {
         }
         popover.contentViewController = DeviceCard(device: devices[i])
         let s = segments[i], offset = imageOffset(button)
-        let anchor = NSRect(x: offset + s.lowerBound, y: 0, width: s.upperBound - s.lowerBound, height: button.bounds.height)
-        popover.show(relativeTo: anchor, of: button, preferredEdge: .minY)
+        popoverAnchor = NSRect(x: offset + s.lowerBound, y: 0, width: s.upperBound - s.lowerBound, height: button.bounds.height)
+        popover.show(relativeTo: popoverAnchor, of: button, preferredEdge: .minY)
+        if hoverTimer == nil {
+            hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.closeIfPointerLeft() }
+            }
+        }
+    }
+
+    /// Closes the popover once the pointer has been away from it and its device for half a second.
+    private func closeIfPointerLeft() {
+        guard popover.isShown, let card = popover.contentViewController?.view.window?.frame,
+              let button = item.button, let window = button.window else { return }
+        let anchor = window.convertToScreen(button.convert(popoverAnchor, to: nil))
+        // one area covering the device, the popover and the arrow gap between them
+        if card.union(anchor).insetBy(dx: -6, dy: -6).contains(NSEvent.mouseLocation) {
+            pointerLeft = nil
+        } else if let left = pointerLeft {
+            if Date().timeIntervalSince(left) >= 0.5 { popover.close() }
+        } else {
+            pointerLeft = Date()
+        }
     }
 
     /// The button draws its image centered.
@@ -206,6 +250,9 @@ final class StatusController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         popoverClosed = Date()
+        hoverTimer?.invalidate()
+        hoverTimer = nil
+        pointerLeft = nil
     }
 
     // MARK: Drawing
@@ -284,6 +331,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
         menu.addItem(login)
 
         menu.addItem(.separator())
+        menu.addItem(action("About Pips", #selector(showAbout)))
         menu.addItem(NSMenuItem(title: "Quit Pips", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         return menu
     }
