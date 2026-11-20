@@ -7,10 +7,12 @@ mod connected;
 mod flyout;
 mod settings;
 mod strip;
+mod updater;
 
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::Foundation::WAIT_TIMEOUT;
+use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
 use windows::core::{HSTRING, w};
@@ -22,10 +24,16 @@ fn main() {
     }
     unsafe {
         // a second copy would add duplicate tray icons
-        let _mutex = CreateMutexW(None, true, w!("Local\\Pips"));
+        let mutex = CreateMutexW(None, true, w!("Local\\Pips"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
-            return;
+            // right after an update the old copy is still quitting: wait for it instead of exiting
+            let Ok(m) = &mutex else { return };
+            if !std::env::args().any(|a| a == "--after-update") || WaitForSingleObject(*m, 10_000) == WAIT_TIMEOUT {
+                return;
+            }
         }
+        let _mutex = mutex;
+        updater::cleanup();
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if let Err(e) = app::run() {
             MessageBoxW(None, &HSTRING::from(format!("Pips failed to start: {}", e.message())), w!("Pips"), MB_ICONERROR);

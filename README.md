@@ -98,11 +98,13 @@ Output: `windows\target\release\pips.exe`.
 | Headphones and earbuds | `IOBluetoothDevice` battery properties | Same as above |
 | Connect / disconnect | IOBluetooth notifications | Device watcher |
 
+**Updates:** Pips checks [GitHub Releases](https://github.com/a-mayur/pips/releases) on launch and once a day. When a newer version exists, it shows what changed and can download, verify (SHA-256) and install it. That check is the only network request Pips makes; turn it off with **Check for updates automatically** in the update window, or check by hand with **Check for updates…** in the right-click menu.
+
 Devices that report no battery level are not shown. Devices on a USB receiver (Logitech Unifying or Bolt) are not Bluetooth and are not supported.
 
 ## Release
 
-Every push to `main` builds both apps. Pushing a `v*` tag publishes a GitHub Release with `Pips.dmg`, `Pips.zip`, `pips.exe` and `SHA256SUMS.txt`:
+Pushing a `v*` tag builds both apps and publishes a GitHub Release with `Pips.dmg`, `Pips.zip`, `pips.exe` and `SHA256SUMS.txt`:
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0

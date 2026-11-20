@@ -1,12 +1,13 @@
-//! Settings in the current user's registry: Launch at login, taskbar theme.
+//! Settings in the current user's registry: Launch at login, update checks, taskbar theme.
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW,
+    HKEY_CURRENT_USER, REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW,
     RegSetKeyValueW,
 };
 use windows::core::{PCWSTR, Result, w};
 
+const APP_KEY: PCWSTR = w!("Software\\Pips");
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const THEME_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
 
@@ -55,4 +56,32 @@ fn dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
         )
     };
     (status == ERROR_SUCCESS).then_some(value)
+}
+
+/// On unless the user turned it off in the update dialog.
+pub fn auto_update() -> bool {
+    dword(APP_KEY, w!("AutoUpdate")) != Some(0)
+}
+
+pub fn set_auto_update(on: bool) -> Result<()> {
+    let bytes = (on as u32).to_le_bytes();
+    unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, APP_KEY, w!("AutoUpdate"), REG_DWORD.0, Some(bytes.as_ptr().cast()), 4) }.ok()
+}
+
+/// Version the user chose to skip in the update dialog.
+pub fn skipped_version() -> Option<String> {
+    let mut buffer = [0u16; 64];
+    let mut size = (buffer.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, APP_KEY, w!("SkippedVersion"), RRF_RT_REG_SZ, None, Some(buffer.as_mut_ptr().cast()), Some(&mut size))
+    };
+    (status == ERROR_SUCCESS).then(|| String::from_utf16_lossy(&buffer[..(size as usize / 2).saturating_sub(1)]))
+}
+
+pub fn set_skipped_version(version: &str) -> Result<()> {
+    let value: Vec<u16> = version.encode_utf16().chain([0]).collect();
+    unsafe {
+        RegSetKeyValueW(HKEY_CURRENT_USER, APP_KEY, w!("SkippedVersion"), REG_SZ.0, Some(value.as_ptr().cast()), (value.len() * 2) as u32)
+    }
+    .ok()
 }

@@ -13,6 +13,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let ble = BLEBatteryReader()
     private let classic = ClassicBatteryReader()
+    private let updater = Updater()
     private var watcher: ConnectionWatcher?
     private var timer: Timer?
     private var pendingRefresh: DispatchWorkItem?
@@ -135,6 +136,10 @@ final class StatusController: NSObject, NSPopoverDelegate {
     }
 
     // MARK: Settings actions
+
+    @objc private func checkForUpdates() {
+        updater.check(manual: true)
+    }
 
     /// The standard About panel: icon, name and version from Info.plist (set from the release tag by build.sh).
     @objc private func showAbout() {
@@ -331,6 +336,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
         menu.addItem(login)
 
         menu.addItem(.separator())
+        menu.addItem(action("Check for Updates…", #selector(checkForUpdates)))
         menu.addItem(action("About Pips", #selector(showAbout)))
         menu.addItem(NSMenuItem(title: "Quit Pips", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         return menu

@@ -11,7 +11,7 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
     EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, GetClassNameW, GetCursorPos, GetMessageW,
-    GetWindowRect, GetWindowThreadProcessId, HMENU, HWND_TOPMOST, KillTimer, MB_ICONERROR, MF_CHECKED, MF_GRAYED,
+    GetWindowRect, GetWindowThreadProcessId, HMENU, HWND_TOPMOST, KillTimer, MB_ICONERROR, MB_ICONINFORMATION, MF_CHECKED, MF_GRAYED,
     MF_SEPARATOR, MF_STRING, MSG, MessageBoxW, OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PostMessageW,
     PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TPM_RETURNCMD,
@@ -22,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
 use crate::about;
+use crate::updater::{self, Choice};
 use crate::battery::{self, Kind, Reading};
 use crate::connected;
 use crate::flyout::{self, Card};
@@ -29,12 +30,19 @@ use crate::settings;
 use crate::strip::{self, Chip, Rgb};
 
 const WM_DEVICES_CHANGED: u32 = WM_USER + 1;
+/// update check finished: wparam 1 if the user asked, lparam a Box<UpdateResult>
+const WM_UPDATE_RESULT: u32 = WM_USER + 2;
+type UpdateResult = std::result::Result<Option<updater::Update>, String>;
 
 const TIMER_BACKGROUND: usize = 1;
 const TIMER_SOON: usize = 2; // after a connect/disconnect, battery change or wake
 const TIMER_LATE: usize = 3; // headphones report battery several seconds after connecting
 const TIMER_TOPMOST: usize = 4; // the taskbar can end up above the strip, e.g. after clicking it
 const TIMER_HOVER: usize = 5; // while the device card is open: close it once the pointer leaves
+const TIMER_UPDATE: usize = 6; // daily update check
+const TIMER_UPDATE_FIRST: usize = 7; // update check shortly after launch
+const UPDATE_MS: u32 = 24 * 60 * 60 * 1000;
+const UPDATE_FIRST_MS: u32 = 10_000;
 const HOVER_MS: u32 = 200;
 const HOVER_TICKS: u8 = 3; // ~0.6 s away from the card and its chip
 /// Safety net for devices whose battery changes Windows does not report as events.
@@ -48,6 +56,7 @@ const ID_REFRESH: usize = 1;
 const ID_LOGIN: usize = 2;
 const ID_QUIT: usize = 3;
 const ID_ABOUT: usize = 4;
+const ID_CHECK_UPDATES: usize = 5;
 
 const LOW: u8 = 20;
 const RED: Rgb = Rgb(0xFF, 0x5F, 0x57);
@@ -126,6 +135,8 @@ pub fn run() -> Result<()> {
         SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT);
         SetTimer(Some(hwnd), TIMER_BACKGROUND, BACKGROUND_MS, None);
         SetTimer(Some(hwnd), TIMER_TOPMOST, TOPMOST_MS, None);
+        SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_MS, None);
+        SetTimer(Some(hwnd), TIMER_UPDATE_FIRST, UPDATE_FIRST_MS, None);
         with_app(|a| a.refresh());
         with_app(|a| a.render()).unwrap_or(Ok(()))?; // fail fast if the taskbar is not found
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -205,6 +216,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                 SetTimer(Some(hwnd), TIMER_LATE, LATE_MS, None);
             }
         }
+        WM_TIMER if wparam.0 == TIMER_UPDATE || wparam.0 == TIMER_UPDATE_FIRST => {
+            if wparam.0 == TIMER_UPDATE_FIRST {
+                let _ = unsafe { KillTimer(Some(hwnd), TIMER_UPDATE_FIRST) };
+            }
+            if settings::auto_update() {
+                start_update_check(hwnd, false);
+            }
+        }
+        WM_UPDATE_RESULT => {
+            let result = unsafe { Box::from_raw(lparam.0 as *mut UpdateResult) };
+            handle_update(hwnd, wparam.0 == 1, *result);
+        }
         WM_TIMER if wparam.0 == TIMER_HOVER => {
             with_app(|a| a.close_flyout_if_pointer_left());
         }
@@ -261,6 +284,70 @@ fn show_device(_hwnd: HWND, x: i32) {
     });
 }
 
+/// Asks GitHub on a worker thread; the answer comes back as WM_UPDATE_RESULT.
+fn start_update_check(hwnd: HWND, manual: bool) {
+    let target = hwnd.0 as usize; // HWND is not Send; the worker only posts to it
+    std::thread::spawn(move || {
+        let result: UpdateResult = updater::check().map_err(|e| e.message());
+        let boxed = Box::into_raw(Box::new(result)) as isize;
+        if unsafe { PostMessageW(Some(HWND(target as _)), WM_UPDATE_RESULT, WPARAM(manual as usize), LPARAM(boxed)) }.is_err() {
+            drop(unsafe { Box::from_raw(boxed as *mut UpdateResult) });
+        }
+    });
+}
+
+/// Runs outside `with_app`: the dialogs pump messages that re-enter `window_proc`.
+fn handle_update(hwnd: HWND, manual: bool, result: UpdateResult) {
+    let instance = unsafe { GetModuleHandleW(None) }.map(Into::into).unwrap_or_default();
+    let message = |text: &str, icon| unsafe { MessageBoxW(Some(hwnd), &HSTRING::from(text), w!("Pips update"), icon) };
+    let update = match result {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            if manual {
+                message(&format!("Pips is up to date. You have the latest version, {}.", about::VERSION), MB_ICONINFORMATION);
+            }
+            return;
+        }
+        Err(e) => {
+            if manual {
+                message(&format!("Could not check for updates: {e}"), MB_ICONERROR);
+            }
+            return;
+        }
+    };
+    if !manual && settings::skipped_version().as_deref() == Some(update.version.as_str()) {
+        return;
+    }
+    let (choice, auto) = match updater::offer(hwnd, instance, &update, settings::auto_update()) {
+        Ok(c) => c,
+        Err(e) => {
+            message(&format!("Showing the update failed: {}", e.message()), MB_ICONERROR);
+            return;
+        }
+    };
+    let _ = settings::set_auto_update(auto);
+    match choice {
+        Choice::Later => {}
+        Choice::Skip => {
+            let _ = settings::set_skipped_version(&update.version);
+        }
+        Choice::Install => match updater::download_with_progress(hwnd, instance, &update) {
+            None => {} // cancelled
+            Some(Err(e)) => {
+                message(&format!("Update failed: {e}"), MB_ICONERROR);
+            }
+            Some(Ok(exe)) => match updater::install(&exe) {
+                Ok(()) => {
+                    let _ = unsafe { DestroyWindow(hwnd) }; // the new copy takes over once this one exits
+                }
+                Err(e) => {
+                    message(&format!("Update failed: {e}"), MB_ICONERROR);
+                }
+            },
+        },
+    }
+}
+
 /// Right click: devices and options. Runs outside `with_app`: the menu and message boxes pump
 /// messages that re-enter `window_proc`.
 fn show_menu(hwnd: HWND) {
@@ -274,6 +361,10 @@ fn show_menu(hwnd: HWND) {
         ID_LOGIN => settings::set_launch_at_login(!settings::launch_at_login()),
         ID_QUIT => unsafe { DestroyWindow(hwnd) },
         ID_ABOUT => about::show(hwnd, unsafe { GetModuleHandleW(None) }.map(Into::into).unwrap_or_default()),
+        ID_CHECK_UPDATES => {
+            start_update_check(hwnd, true);
+            Ok(())
+        }
         _ => Ok(()),
     };
     if let Err(e) = result {
@@ -407,6 +498,7 @@ impl App {
             let login = if settings::launch_at_login() { MF_CHECKED } else { MF_STRING };
             append(menu, MF_STRING | login, ID_LOGIN, "Launch at login");
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            append(menu, MF_STRING, ID_CHECK_UPDATES, "Check for updates…");
             append(menu, MF_STRING, ID_ABOUT, "About Pips");
             append(menu, MF_STRING, ID_QUIT, "Quit Pips");
             menu
