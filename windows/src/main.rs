@@ -18,6 +18,10 @@ use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
 use windows::core::{HSTRING, w};
 
 fn main() {
+    // elevated helper started by the updater when pips.exe lives in a protected folder
+    if let Some(target) = std::env::args().skip_while(|a| a != "--replace").nth(1) {
+        std::process::exit(if updater::replace_from_elevated(std::path::Path::new(&target)).is_ok() { 0 } else { 1 });
+    }
     if std::env::args().any(|a| a == "--list") {
         list();
         return;

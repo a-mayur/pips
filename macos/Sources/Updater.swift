@@ -123,6 +123,12 @@ final class Updater: NSObject {
     }
 
     private func install(_ release: Release) {
+        // checked before downloading: the swap needs to write next to Pips.app
+        let parent = Bundle.main.bundleURL.deletingLastPathComponent().path
+        guard Bundle.main.bundleURL.pathExtension == "app", FileManager.default.isWritableFile(atPath: parent) else {
+            show("Update failed", UpdateError.notWritable(parent).localizedDescription)
+            return
+        }
         guard let zip = release.assets.first(where: { $0.name == assetName }),
               let sums = release.assets.first(where: { $0.name == sumsName }) else {
             show("Update failed", UpdateError.missingAsset(release.version).localizedDescription)

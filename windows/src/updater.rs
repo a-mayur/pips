@@ -1,5 +1,6 @@
 //! Checks GitHub Releases for a newer Pips, shows what changed, and replaces pips.exe in place.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use windows::Data::Json::{JsonArray, JsonObject, JsonValueType};
@@ -8,13 +9,15 @@ use windows::Security::Cryptography::Core::{HashAlgorithmNames, HashAlgorithmPro
 use windows::Security::Cryptography::CryptographicBuffer;
 use windows::Storage::Streams::{DataReader, IBuffer};
 use windows::Web::Http::HttpClient;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, S_OK, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, HINSTANCE, HWND, LPARAM, S_OK, WAIT_TIMEOUT, WPARAM};
+use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOG_NOTIFICATIONS, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TDCBF_CANCEL_BUTTON,
     TDF_ALLOW_DIALOG_CANCELLATION, TDF_EXPANDED_BY_DEFAULT, TDF_SHOW_MARQUEE_PROGRESS_BAR,
     TDF_VERIFICATION_FLAG_CHECKED, TDM_CLICK_BUTTON, TDM_SET_PROGRESS_BAR_MARQUEE, TDN_CREATED, TaskDialogIndirect,
 };
-use windows::Win32::UI::WindowsAndMessaging::{IDCANCEL, PostMessageW, SendMessageW};
+use windows::Win32::UI::WindowsAndMessaging::{IDCANCEL, PostMessageW, SW_HIDE, SendMessageW};
 use windows::core::{BOOL, HRESULT, HSTRING, PCWSTR, Result, w};
 
 use crate::about::VERSION;
@@ -115,19 +118,76 @@ fn bytes(buffer: &IBuffer) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Swaps in the new exe next to the running one and starts it. The caller then quits.
-pub fn install(new_exe: &[u8]) -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
-    let (new, old) = (exe.with_extension("new.exe"), exe.with_extension("old.exe"));
-    std::fs::write(&new, new_exe)?;
+/// Swaps in the new exe in place of the running one and starts it. The caller then quits.
+/// Where this user can't write (C:\\, Program Files), the swap runs elevated after a UAC prompt.
+pub fn install(new_exe: &[u8]) -> std::result::Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let folder = exe.parent().ok_or("Pips cannot find its own folder.")?;
+    if writable(folder) {
+        let new = exe.with_extension("new.exe");
+        std::fs::write(&new, new_exe).map_err(|e| e.to_string())?;
+        swap(&new, &exe).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&new);
+    } else {
+        install_elevated(new_exe, &exe)?;
+    }
+    std::process::Command::new(&exe).arg("--after-update").spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn writable(folder: &Path) -> bool {
+    let probe = folder.join(".pips-update-test");
+    let ok = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
+/// Replaces `target` (possibly running) with a copy of `new`; on failure `target` is left as it was.
+fn swap(new: &Path, target: &Path) -> std::io::Result<()> {
+    let old = target.with_extension("old.exe");
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old)?; // Windows allows renaming a running exe, not overwriting it
-    if let Err(e) = std::fs::rename(&new, &exe) {
-        let _ = std::fs::rename(&old, &exe);
+    std::fs::rename(target, &old)?; // Windows allows renaming a running exe, not overwriting it
+    if let Err(e) = std::fs::copy(new, target) {
+        let _ = std::fs::rename(&old, target);
         return Err(e);
     }
-    std::process::Command::new(&exe).arg("--after-update").spawn()?;
     Ok(())
+}
+
+/// Saves the new exe to %TEMP% and runs it elevated with `--replace <target>`; waits for it.
+fn install_elevated(new_exe: &[u8], target: &Path) -> std::result::Result<(), String> {
+    let staged = std::env::temp_dir().join("pips-update.exe");
+    std::fs::write(&staged, new_exe).map_err(|e| e.to_string())?;
+    let file = HSTRING::from(staged.as_os_str());
+    let parameters = HSTRING::from(format!("--replace \"{}\"", target.display()));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: w!("runas"), // UAC prompt
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(parameters.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    let result = unsafe { ShellExecuteExW(&mut info) };
+    let outcome = match result {
+        Err(e) if e.code() == ERROR_CANCELLED.to_hresult() => Err("Update cancelled: administrator permission was not given.".to_string()),
+        Err(e) => Err(format!("Could not start the update with administrator permission: {}", e.message())),
+        Ok(()) => unsafe {
+            let finished = WaitForSingleObject(info.hProcess, 60_000) != WAIT_TIMEOUT;
+            let mut code = 1;
+            let _ = GetExitCodeProcess(info.hProcess, &mut code);
+            let _ = CloseHandle(info.hProcess);
+            if finished && code == 0 { Ok(()) } else { Err(format!("Replacing {} failed.", target.display())) }
+        },
+    };
+    let _ = std::fs::remove_file(&staged);
+    outcome
+}
+
+/// `pips.exe --replace <target>`, run elevated by `install_elevated` from the staged new exe.
+pub fn replace_from_elevated(target: &Path) -> std::io::Result<()> {
+    swap(&std::env::current_exe()?, target)
 }
 
 /// Removes the previous exe left behind by an update.
