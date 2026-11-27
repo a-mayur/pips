@@ -1,7 +1,7 @@
 import Foundation
 
 enum DeviceKind: String, Codable {
-    case mouse, keyboard, headphones, earbuds, other
+    case mouse, keyboard, headphones, earbuds, phone, other
 
     /// SF Symbol shown in the menu bar.
     var symbol: String {
@@ -10,6 +10,7 @@ enum DeviceKind: String, Codable {
         case .keyboard: return "keyboard"
         case .headphones: return "headphones"
         case .earbuds: return "airpods"
+        case .phone: return "iphone"
         case .other: return "dot.radiowaves.left.and.right"
         }
     }
@@ -21,6 +22,7 @@ enum DeviceKind: String, Codable {
         case .keyboard: return "Keyboard"
         case .headphones: return "Headphones"
         case .earbuds: return "Earbuds"
+        case .phone: return "Phone"
         case .other: return "Bluetooth device"
         }
     }

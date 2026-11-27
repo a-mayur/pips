@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, IsWindowVisible, RegisterClassW, SW_HIDE, SW_SHOW, SetForegroundWindow,
+    CreateWindowExW, DefWindowProcW, IDC_ARROW, IsWindowVisible, LoadCursorW, RegisterClassW, SW_HIDE, SW_SHOW, SetForegroundWindow,
     ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WA_INACTIVE, WM_ACTIVATE, WM_KEYDOWN, WNDCLASSW, WS_EX_LAYERED,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -34,7 +34,8 @@ pub struct Card {
 pub fn create(instance: HINSTANCE) -> Result<HWND> {
     unsafe {
         let class = w!("PipsFlyout");
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(window_proc), hInstance: instance, lpszClassName: class, ..Default::default() });
+        let arrow = LoadCursorW(None, IDC_ARROW)?; // otherwise the busy cursor can stick over the card
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(window_proc), hInstance: instance, lpszClassName: class, hCursor: arrow, ..Default::default() });
         CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST, class, w!("Pips"), WS_POPUP, 0, 0, 0, 0, None, None, Some(instance), None)
     }
 }

@@ -95,6 +95,12 @@ final class StatusController: NSObject, NSPopoverDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    /// Mouse or keyboard from the HID registry; otherwise the classic pairing record (phones).
+    private static func bleKind(named name: String) -> DeviceKind {
+        let kind = HIDRegistry.kind(named: name)
+        return kind == .other ? ClassicBatteryReader.kind(named: name) : kind
+    }
+
     private func apply(_ bleResult: Result<[String: Int], BLEError>) {
         var list: [Device] = []
         var errs: [String] = []
@@ -102,7 +108,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
         switch bleResult {
         case .success(let levels):
             list = levels.map { name, level in
-                Device(name: name, kind: HIDRegistry.kind(named: name), barLevel: level, detail: "\(level)%")
+                Device(name: name, kind: Self.bleKind(named: name), barLevel: level, detail: "\(level)%")
             }
         case .failure(let error):
             errs.append(error.description)

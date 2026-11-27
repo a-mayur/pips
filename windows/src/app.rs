@@ -11,7 +11,7 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
     EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, GetClassNameW, GetCursorPos, GetMessageW,
-    GetWindowRect, GetWindowThreadProcessId, HMENU, HWND_TOPMOST, KillTimer, MB_ICONERROR, MB_ICONINFORMATION, MF_CHECKED, MF_GRAYED,
+    GetWindowRect, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, HMENU, HWND_TOPMOST, KillTimer, MB_ICONERROR, MB_ICONINFORMATION, MF_CHECKED, MF_GRAYED,
     MF_SEPARATOR, MF_STRING, MSG, MessageBoxW, OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PostMessageW,
     PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TPM_RETURNCMD,
@@ -93,7 +93,9 @@ pub fn run() -> Result<()> {
     unsafe {
         let instance = GetModuleHandleW(None)?;
         let class = w!("PipsStrip");
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(window_proc), hInstance: instance.into(), lpszClassName: class, ..Default::default() });
+        // arrow cursor: without one Windows keeps showing whatever cursor was last set, often the busy one
+        let arrow = LoadCursorW(None, IDC_ARROW)?;
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(window_proc), hInstance: instance.into(), lpszClassName: class, hCursor: arrow, ..Default::default() });
         // layered: per-pixel transparency; tool window: no taskbar button; no-activate: clicks never steal focus
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -516,6 +518,7 @@ fn glyph(kind: Kind) -> char {
         Kind::Mouse => '\u{E962}',
         Kind::Keyboard => '\u{E765}',
         Kind::Headphones => '\u{E7F6}',
+        Kind::Phone => '\u{E8EA}',
         Kind::Other => GLYPH_BLUETOOTH,
     }
 }
@@ -525,6 +528,7 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::Mouse => "Mouse",
         Kind::Keyboard => "Keyboard",
         Kind::Headphones => "Headphones",
+        Kind::Phone => "Phone",
         Kind::Other => "Bluetooth device",
     }
 }

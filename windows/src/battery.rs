@@ -7,7 +7,7 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiGetClassDevsW, SetupDiGetDevicePropertyW,
 };
 use windows::Win32::Devices::Properties::{
-    DEVPKEY_Device_ContainerId, DEVPROP_TYPE_BYTE, DEVPROP_TYPE_GUID, DEVPROPTYPE,
+    DEVPKEY_Device_ContainerId, DEVPROP_TYPE_BYTE, DEVPROP_TYPE_GUID, DEVPROP_TYPE_UINT32, DEVPROPTYPE,
 };
 use windows::Win32::Foundation::DEVPROPKEY;
 use std::collections::{HashMap, HashSet};
@@ -24,6 +24,13 @@ const DEVPKEY_BLUETOOTH_BATTERY: DEVPROPKEY = DEVPROPKEY {
 };
 
 // device setup classes that tell what a physical device is
+/// Bluetooth Class of Device (bthdevpkey.h); major class 0x02 is phone
+const DEVPKEY_BLUETOOTH_CLASS_OF_DEVICE: DEVPROPKEY = DEVPROPKEY {
+    fmtid: GUID::from_u128(0x2bd67d8b_8beb_48d5_87e0_6cda3428040a),
+    pid: 10,
+};
+const MAJOR_PHONE: u32 = 0x02;
+
 const CLASS_MOUSE: GUID = GUID::from_u128(0x4d36e96f_e325_11ce_bfc1_08002be10318);
 const CLASS_KEYBOARD: GUID = GUID::from_u128(0x4d36e96b_e325_11ce_bfc1_08002be10318);
 const CLASS_MEDIA: GUID = GUID::from_u128(0x4d36e96c_e325_11ce_bfc1_08002be10318);
@@ -34,6 +41,7 @@ pub enum Kind {
     Mouse,
     Keyboard,
     Headphones,
+    Phone,
     Other,
 }
 
@@ -60,26 +68,35 @@ pub fn read() -> Result<Vec<Reading>> {
     let connected = connected::connected()?;
     let mut levels: Vec<(GUID, u8)> = Vec::new();
     let mut classes: HashMap<GUID, HashSet<GUID>> = HashMap::new();
+    let mut phones: HashSet<GUID> = HashSet::new();
     each_node(|set, info| {
         let Some(c) = (unsafe { container(set, info) }) else { return };
         if !connected.contains_key(&c) {
             return;
         }
         classes.entry(c).or_default().insert(info.ClassGuid);
+        if let Some(cod) = unsafe { property(set, info, &DEVPKEY_BLUETOOTH_CLASS_OF_DEVICE, DEVPROP_TYPE_UINT32) } {
+            if (u32::from_le_bytes(cod[..4].try_into().unwrap_or_default()) >> 8) & 0x1F == MAJOR_PHONE {
+                phones.insert(c);
+            }
+        }
         if let Some(level) = unsafe { property(set, info, &DEVPKEY_BLUETOOTH_BATTERY, DEVPROP_TYPE_BYTE) } {
             levels.push((c, level[0]));
         }
     })?;
     let readings = levels
         .into_iter()
-        .map(|(c, level)| Reading { name: connected[&c].clone(), level, kind: kind(&classes[&c]) })
+        .map(|(c, level)| Reading { name: connected[&c].clone(), level, kind: kind(&classes[&c], phones.contains(&c)) })
         .collect();
     Ok(clean(readings))
 }
 
+/// Phone first: a phone's container also has audio nodes (calls), which would read as headphones.
 /// Mouse wins over keyboard: mice often also expose a keyboard interface for their extra buttons.
-fn kind(classes: &HashSet<GUID>) -> Kind {
-    if classes.contains(&CLASS_MOUSE) {
+fn kind(classes: &HashSet<GUID>, phone: bool) -> Kind {
+    if phone {
+        Kind::Phone
+    } else if classes.contains(&CLASS_MOUSE) {
         Kind::Mouse
     } else if classes.contains(&CLASS_KEYBOARD) {
         Kind::Keyboard
@@ -157,9 +174,10 @@ mod tests {
 
     #[test]
     fn mouse_wins_over_keyboard() {
-        assert_eq!(kind(&HashSet::from([CLASS_KEYBOARD, CLASS_MOUSE])), Kind::Mouse);
-        assert_eq!(kind(&HashSet::from([CLASS_KEYBOARD])), Kind::Keyboard);
-        assert_eq!(kind(&HashSet::from([CLASS_AUDIO_ENDPOINT])), Kind::Headphones);
-        assert_eq!(kind(&HashSet::new()), Kind::Other);
+        assert_eq!(kind(&HashSet::from([CLASS_KEYBOARD, CLASS_MOUSE]), false), Kind::Mouse);
+        assert_eq!(kind(&HashSet::from([CLASS_KEYBOARD]), false), Kind::Keyboard);
+        assert_eq!(kind(&HashSet::from([CLASS_AUDIO_ENDPOINT]), false), Kind::Headphones);
+        assert_eq!(kind(&HashSet::from([CLASS_AUDIO_ENDPOINT]), true), Kind::Phone);
+        assert_eq!(kind(&HashSet::new(), false), Kind::Other);
     }
 }

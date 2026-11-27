@@ -88,8 +88,18 @@ struct ClassicBatteryReader {
             default: return .other
             }
         case 0x04: return .headphones  // audio/video
+        case 0x02: return .phone
         default: return .other
         }
+    }
+
+    /// Kind of the paired device with this name, from its Class of Device. An iPhone connected over
+    /// Bluetooth LE has no HID interface, but its classic pairing record says "phone".
+    static func kind(named name: String) -> DeviceKind {
+        guard let d = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []).first(where: { $0.name == name }) else {
+            return .other
+        }
+        return kind(of: d)
     }
 
     private static func connected() -> [IOBluetoothDevice] {
